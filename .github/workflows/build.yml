@@ -1,0 +1,154 @@
+name: Build UT 26.04 flash kit
+
+on:
+  # Per Klick: GitHub -> Actions -> "Build UT 26.04 flash kit" -> "Run workflow"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Ergebnis als GitHub-Release veröffentlichen"
+        type: boolean
+        default: true
+      channel:
+        description: "UBports system-image Kanal (Rootfs-Quelle)"
+        type: string
+        default: "26.04-1.x/arm64/android9plus/daily"
+      fresh_port:
+        description: "Neuesten vayu-Port-CI-Build (Kernel 4.14.190) von GitLab holen statt Overlay aus letztem Release"
+        type: boolean
+        default: false
+      build_kernel:
+        description: "Kernel 4.14.221-perf+ selbst bauen (kernel/build-kernel.sh, ~40 min)"
+        type: boolean
+        default: false
+  # Tag pushen (git tag v26.04-1 && git push --tags) -> Build + Release
+  push:
+    tags: ['v*']
+  # Optional: jede Woche mit neuem 26.04-daily-Rootfs bauen
+  # schedule:
+  #   - cron: '23 3 * * 1'
+
+permissions:
+  contents: write          # nötig zum Anlegen von Releases
+
+concurrency:
+  group: build-flashkit-2604
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      KIT: vayu-ubuntu-touch-26.04-flashkit
+      CH: ${{ inputs.channel || '26.04-1.x/arm64/android9plus/daily' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Der Runner hat nur ~14 GB frei, das Skript braucht ~16 GB + Pack-Platz.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            curl wget python3 unzip fakeroot e2fsprogs xz-utils zstd \
+            git make gcc bc bison flex cpio libssl-dev
+          echo 'progress = dot:giga' > ~/.wgetrc   # wget-Fortschritt sonst zeilenweise im Log
+
+      # Halium, Droidian (~2 GB), OrangeFox zwischenspeichern. Das 26.04-Rootfs
+      # ändert sich täglich (neuer Dateiname), wird also bei Bedarf neu geladen.
+      - name: Cache downloads
+        uses: actions/cache@v6
+        with:
+          path: dl
+          key: dl2604-${{ hashFiles('build-2604.sh') }}-${{ github.run_id }}
+          restore-keys: dl2604-
+
+      - name: Build kernel 4.14.221-perf+
+        if: ${{ inputs.build_kernel }}
+        run: |
+          chmod +x kernel/build-kernel.sh
+          kernel/build-kernel.sh
+          rm -rf kernel/work      # Toolchains/Objekte (~10 GB) wieder freigeben
+          df -h /
+
+      # GitLab löscht die Port-CI-Artefakte nach ~30 Tagen. Deshalb liegt
+      # device_vayu_usrmerge.tar.xz in jedem Release und wird hier wiederverwendet.
+      - name: Device overlay from latest release
+        if: ${{ !inputs.build_kernel && !inputs.fresh_port }}
+        run: |
+          mkdir -p out
+          if gh release download --repo "$GITHUB_REPOSITORY" \
+               --pattern device_vayu_usrmerge.tar.xz --dir out 2>/dev/null; then
+            echo "Device-Overlay aus letztem Release übernommen"
+          else
+            echo "Kein Release mit Device-Overlay -> Build-Skript holt es von GitLab"
+          fi
+
+      - name: Build kit
+        run: |
+          chmod +x build-2604.sh
+          ./build-2604.sh --pack 2>&1 | tee build.log
+          df -h /
+
+      # Release-Assets dürfen max. 2 GiB groß sein -> in Teile splitten
+      - name: Prepare dist
+        run: |
+          mkdir -p dist
+          split -b 1900M -d -a 2 "$KIT.tar.zst" "dist/$KIT.tar.zst.part"
+          cp "$KIT.tar.zst.sha256" dist/
+          cp "$KIT/SHA256SUMS" dist/images.SHA256SUMS
+          cp out/device_vayu_usrmerge.tar.xz dist/
+          grep -E '^(channel:|build_number:|version_detail:|systemd in rootfs|kernel in device overlay)' build.log > dist/build-info.txt || true
+          cat dist/build-info.txt
+          ls -lh dist
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.KIT }}
+          path: dist/
+          compression-level: 0
+          retention-days: 7
+
+      - name: Publish release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.release }}
+        run: |
+          BUILD=$(sed -n 's/^build_number: //p' dist/build-info.txt | head -1)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="ut2604-build${BUILD:-x}-$(date -u +%Y%m%d-%H%M)"
+          fi
+          cat > notes.md <<EOF
+          🧪 **Ubuntu Touch 26.04 (frühe Version, Kanal \`$CH\`) für Poco X3 Pro (vayu)**
+          UBports-Build ${BUILD:-?}, gebaut von Commit ${GITHUB_SHA::7}. Ungetestet – für den Alltag das 24.04-Kit nutzen.
+
+          **Zusammensetzen und flashen:**
+          \`\`\`bash
+          cat $KIT.tar.zst.part* > $KIT.tar.zst
+          sha256sum -c $KIT.tar.zst.sha256
+          tar --zstd -xf $KIT.tar.zst
+          cd $KIT && ./flash.sh      # Telefon im Fastboot-Modus
+          \`\`\`
+
+          Build-Infos:
+          \`\`\`
+          $(cat dist/build-info.txt)
+          \`\`\`
+
+          ⚠️ Inoffiziell, Flashen löscht alle Daten.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "UT 26.04 flash kit $TAG" \
+            --prerelease \
+            --notes-file notes.md

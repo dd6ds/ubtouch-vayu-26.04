@@ -1,0 +1,14 @@
+# Build-Ergebnisse und Caches von build-2604.sh (werden vom Workflow erzeugt)
+dl/
+out/
+out-2604/
+stage/
+ver/
+dist/
+vayu-ubuntu-touch-26.04-flashkit/
+kernel/work/
+*.img
+*.tar.zst*
+*.zip
+build.log
+notes.md
