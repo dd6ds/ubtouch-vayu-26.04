@@ -39,6 +39,19 @@ adb shell 'cd /data/system-data/var/log 2>/dev/null && tar -cf /tmp/sdlog.tar . 
 adb pull /tmp/sdlog.tar "$OUT/sdlog.tar" >/dev/null 2>&1 && mkdir -p "$OUT/system-data-log" && tar -xf "$OUT/sdlog.tar" -C "$OUT/system-data-log" && rm "$OUT/sdlog.tar"
 adb shell 'cat /data/user-data/phablet/.xsession-errors 2>/dev/null' > "$OUT/xsession-errors.txt" || true
 
+# crash reports written by libvayucrash.so (LD_PRELOAD in Lomiri, DEBUG build)
+echo "==> pulling crash reports (~/vayu-crash-*.txt)"
+mkdir -p "$OUT/crash"
+for f in $(adb shell 'ls /data/user-data/phablet/vayu-crash-*.txt 2>/dev/null' | tr -d '\r'); do
+  adb pull "$f" "$OUT/crash/" >/dev/null && echo "   $(basename "$f")"
+done
+if ls "$OUT"/crash/*.txt >/dev/null 2>&1; then
+  adb shell 'rm -f /data/user-data/phablet/vayu-crash-*.txt'   # free the 5 slots for the next run
+  head -q -n 2 "$OUT"/crash/*.txt || true
+else
+  echo "   none"; rmdir "$OUT/crash"
+fi
+
 # core dumps written by the DEBUG build (build-2604.sh, /usr/local/sbin/vayu-coresave)
 echo "==> pulling core dumps (/data/vayu-cores)"
 if adb shell 'ls /data/vayu-cores/*.core' >/dev/null 2>&1; then

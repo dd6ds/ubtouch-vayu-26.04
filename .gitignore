@@ -12,3 +12,4 @@ kernel/work/
 *.zip
 build.log
 notes.md
+bootlogs-*/

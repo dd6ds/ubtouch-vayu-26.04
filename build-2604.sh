@@ -162,6 +162,14 @@ kernel.core_pattern=|/usr/local/sbin/vayu-coresave %P %e %s
 kernel.core_pipe_limit=4
 SYSCTL_EOF
 printf '[Service]\nLimitCORE=infinity\n' > dl/debug/90-vayu-core.conf
+# LD_PRELOAD crash reporter (debug/vayucrash.c): writes ~/vayu-crash-N.txt with registers,
+# backtrace and memory map when Lomiri crashes (independent of kernel.core_pattern).
+if command -v aarch64-linux-gnu-gcc >/dev/null && [ -f "$HERE/debug/vayucrash.c" ]; then
+  aarch64-linux-gnu-gcc -shared -fPIC -O1 -pthread -o dl/debug/libvayucrash.so "$HERE/debug/vayucrash.c"
+  printf 'Environment=LD_PRELOAD=/usr/local/lib/libvayucrash.so\n' >> dl/debug/90-vayu-core.conf
+else
+  echo "note: aarch64-linux-gnu-gcc missing - no crash reporter in the debug image"
+fi
 fi
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
@@ -189,6 +197,9 @@ grep -q "^  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
   install -D -m 644 ../dl/debug/90-vayu-coredump.conf system/etc/sysctl.d/90-vayu-coredump.conf
+  if [ -f ../dl/debug/libvayucrash.so ]; then
+    install -D -m 644 ../dl/debug/libvayucrash.so system/usr/local/lib/libvayucrash.so
+  fi
   for u in lomiri-full-greeter lomiri-full-shell lomiri-greeter; do
     install -D -m 644 ../dl/debug/90-vayu-core.conf system/etc/systemd/user/$u.service.d/90-vayu-core.conf
   done
