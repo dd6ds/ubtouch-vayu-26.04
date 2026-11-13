@@ -400,12 +400,31 @@ Unofficial Ubuntu Touch image for the Poco X3 Pro (codename **vayu**), built fro
 > Flashing wipes **all data** on the phone. Use at your own risk.
 
 > 🧪 **Early build.** 26.04-1.x is a hidden *daily* test channel of UBports. vayu is not part of it – this kit
-> combines its generic rootfs with the vayu 24.04 port. Expect regressions (in the test thread e.g. Morph browser
-> not starting, OpenStore/apps missing Qt5-era libraries). For daily use stay on the 24.04 kit.
+> combines its generic rootfs with the vayu 24.04 port and patches what 26.04 breaks on vayu (see
+> [26.04 fixes](#2604-fixes-in-this-kit)). Expect regressions; for daily use the 24.04 kit is the safer choice.
+
+## 26.04 fixes in this kit
+
+The daily rootfs alone does **not** work on vayu. `build-2604.sh` applies these fixes while building `ubuntu.img`
+(every patch searches its exact code location and prints a `WARNING` instead of patching blindly if UBports changes the binary):
+
+| Problem on vayu | Cause | Fix |
+|---|---|---|
+| Hangs at the "Ubuntu Touch" splash, no adb | Lomiri crashes (SEGV in `PlatformScreen::makeCurrent`) and restarts endlessly | qtmir: match Mir display buffers to the screen by position only (fix 1) |
+| Only a small cut-out of the UI, touch misplaced | the 26.04 Mir 1 (2026-11-12) applies the `GridUnit/8` output scale (2.625), qtmir's Mir 1 path still works in physical pixels | qtmir: keep the Mir output scale at 1 (fix 2) |
+| Lomiri UI tiny | Lomiri 0.6 sizes its UI from the screen scale qtmir reports | qtmir: report `GridUnit/8` from deviceinfo to Lomiri (fix 3) |
+| App UIs tiny (Settings, Phone, Browser, OpenStore apps …) | apps take the scale from Mir via the `ubuntumirclient` platform plugin | Qt5 **and** Qt6 `libqpa-ubuntumirclient.so`: return `GridUnit/8` – covers all apps incl. OpenStore installs |
+| OpenStore (and older clicks) do not start | built for 20.04/24.04, need `libxml2.so.2` (26.04 only has `.so.16`) | add `libxml2.so.2` + ICU 74 from the official Ubuntu 24.04 arm64 packages (SHA256 verified, nothing overwritten) |
+
+Apps that bypass Qt (Firefox-based browsers, Electron, GTK, SDL) do not use these plugins and may still render small.
+
+**Debug build:** by default (`DEBUG=1`) the image contains a small crash reporter for Lomiri
+(`debug/vayucrash.c`, writes `~/vayu-crash-N.txt`). `./debug-boot.sh` fetches logs and crash reports through
+OrangeFox when the phone does not boot to the UI. `DEBUG=0 ./build/build-2604.sh` builds an image without it.
 
 ## Hardware support
 
-**Not yet tested on 26.04.** The status column shows what worked with the 26.04-2.2 kit on 2026-10-28 (same kernel, overlay, Halium and vendor) – re-test everything on 26.04.
+Tested on 2026-11-13 with build 471 (26.04-1.x daily): boots to the UI, setup wizard, touch, scaling, Settings, Phone, Browser and OpenStore work. Everything else is not re-tested yet – the status column shows what worked with the 24.04-2.2 kit on 2026-10-28 (same kernel, overlay, Halium and vendor).
 
 | Function | Status |
 |---|---|
@@ -457,7 +476,7 @@ Unofficial Ubuntu Touch image for the Poco X3 Pro (codename **vayu**), built fro
 |  | Volume control in calls | ❔ (24.04: ✅) |
 | Endurance | 24+ hours battery lifetime | ❔ |
 |  | 7+ days stability | ❔ |
-| GPU | Boot into UI | ❔ (24.04: ✅) |
+| GPU | Boot into UI | ✅ |
 |  | Hardware video playback | ❔ |
 | Misc | AppArmor patches | ❔ |
 |  | Battery percentage | ❔ (24.04: ✅) |
@@ -481,7 +500,7 @@ Unofficial Ubuntu Touch image for the Poco X3 Pro (codename **vayu**), built fro
 |  | GPS | ❔ (24.04: ✅) |
 |  | Proximity | ❔ |
 |  | Rotation | ❔ |
-|  | Touchscreen | ❔ (24.04: ✅) |
+|  | Touchscreen | ✅ |
 | Sound | Earphones | ❔ |
 |  | Loudspeaker | ❔ (24.04: ✅) |
 |  | Microphone | ❔ (24.04: ✅) |
@@ -495,6 +514,7 @@ Unofficial Ubuntu Touch image for the Poco X3 Pro (codename **vayu**), built fro
 
 ```
 flash.sh                  automated flashing script (Linux)
+debug-boot.sh             fetches logs/crash reports via OrangeFox if the phone hangs
 SHA256SUMS                checksums of the images
 images/
   boot.img                UT kernel + halium initramfs
@@ -691,7 +711,11 @@ What it does:
 3. Halium 11 generic arm64
 4. Droidian vayu image (~2 GB, checksum verified) → `vendor.img`, `vbmeta.img`
 5. OrangeFox R11.3 for vayu (checksum verified) → recovery image
-6. builds `ubuntu.img`, writes `flash.sh`, `SHA256SUMS` and these READMEs
+6. libxml2.so.2 + ICU 74 from Ubuntu 24.04 (checksum verified) for the OpenStore and older clicks
+7. builds `ubuntu.img` with the [26.04 fixes](#2604-fixes-in-this-kit), writes `flash.sh`, `SHA256SUMS` and these READMEs
+
+Also needs `aarch64-linux-gnu-objdump`/`readelf` (package `binutils-aarch64-linux-gnu`) for the patches and
+`aarch64-linux-gnu-gcc` for the debug crash reporter.
 
 Then flash with `./flash.sh` (new install) or `./flash.sh --rootfs-only` (only a new `ubuntu.img`).
 
@@ -755,12 +779,31 @@ Inoffizielles Ubuntu-Touch-Image für das Poco X3 Pro (Codename **vayu**), gebau
 > Das Flashen löscht **alle Daten** auf dem Telefon. Nutzung auf eigene Gefahr.
 
 > 🧪 **Frühe Version.** 26.04-1.x ist ein versteckter *daily*-Testkanal von UBports. vayu ist dort nicht enthalten –
-> dieses Kit kombiniert dessen generisches Rootfs mit dem vayu-24.04-Port. Mit Regressionen rechnen (im Testthread
-> z. B. Morph-Browser startet nicht, OpenStore/Apps vermissen Qt5-Bibliotheken). Für den Alltag beim 24.04-Kit bleiben.
+> dieses Kit kombiniert dessen generisches Rootfs mit dem vayu-24.04-Port und repariert, was 26.04 auf vayu kaputt
+> macht (siehe [26.04-Fixes](#2604-fixes-in-diesem-kit)). Mit Regressionen rechnen; für den Alltag ist das 24.04-Kit die sicherere Wahl.
+
+## 26.04-Fixes in diesem Kit
+
+Das daily-Rootfs allein läuft auf vayu **nicht**. `build-2604.sh` wendet beim Bau der `ubuntu.img` diese Fixes an
+(jeder Patch sucht seine genaue Code-Stelle und meldet `WARNING`, statt blind zu patchen, falls UBports die Datei ändert):
+
+| Problem auf vayu | Ursache | Fix |
+|---|---|---|
+| Hängt am „Ubuntu Touch“-Splash, kein adb | Lomiri stürzt ab (SEGV in `PlatformScreen::makeCurrent`) und startet endlos neu | qtmir: Display-Buffer nur über die Position dem Bildschirm zuordnen (Fix 1) |
+| Nur kleiner Bildausschnitt, Touch versetzt | das 26.04-Mir-1 (12.11.2026) wendet den Faktor `GridUnit/8` (2,625) an, qtmirs Mir-1-Pfad rechnet weiter physisch | qtmir: Mir-Ausgabefaktor bleibt 1 (Fix 2) |
+| Lomiri-Oberfläche winzig | Lomiri 0.6 richtet die UI nach dem von qtmir gemeldeten Bildschirmfaktor | qtmir: meldet Lomiri `GridUnit/8` aus deviceinfo (Fix 3) |
+| Apps winzig (Einstellungen, Telefon, Browser, OpenStore-Apps …) | Apps holen den Faktor über das Plugin `ubuntumirclient` von Mir | Qt5- **und** Qt6-`libqpa-ubuntumirclient.so`: liefern `GridUnit/8` – gilt für alle Apps inkl. OpenStore-Installationen |
+| OpenStore (und ältere Clicks) starten nicht | für 20.04/24.04 gebaut, brauchen `libxml2.so.2` (26.04 hat nur `.so.16`) | `libxml2.so.2` + ICU 74 aus den offiziellen Ubuntu-24.04-arm64-Paketen (SHA256 geprüft, nichts überschrieben) |
+
+Apps, die an Qt vorbei zeichnen (Firefox-basierte Browser, Electron, GTK, SDL), nutzen diese Plugins nicht und können weiter klein sein.
+
+**Debug-Build:** Standardmäßig (`DEBUG=1`) enthält das Image einen kleinen Crash-Reporter für Lomiri
+(`debug/vayucrash.c`, schreibt `~/vayu-crash-N.txt`). `./debug-boot.sh` holt Logs und Crash-Reports über OrangeFox,
+wenn das Telefon nicht bis zur Oberfläche bootet. `DEBUG=0 ./build/build-2604.sh` baut ein Image ohne diese Teile.
 
 ## Hardware-Unterstützung
 
-**Unter 26.04 noch nicht getestet.** Die Statusspalte zeigt, was mit dem 26.04-2.2-Kit am 28.10.2026 funktionierte (gleicher Kernel, Overlay, Halium und Vendor) – unter 26.04 alles neu testen.
+Getestet am 13.11.2026 mit Build 471 (26.04-1.x daily): bootet bis zur Oberfläche, Einrichtungs-Assistent, Touch, Skalierung, Einstellungen, Telefon, Browser und OpenStore funktionieren. Alles andere ist noch nicht neu getestet – die Statusspalte zeigt, was mit dem 24.04-2.2-Kit am 28.10.2026 funktionierte (gleicher Kernel, Overlay, Halium und Vendor).
 
 | Funktion | Status |
 |---|---|
@@ -812,7 +855,7 @@ Inoffizielles Ubuntu-Touch-Image für das Poco X3 Pro (Codename **vayu**), gebau
 |  | Volume control in calls | ❔ (24.04: ✅) |
 | Endurance | 24+ hours battery lifetime | ❔ |
 |  | 7+ days stability | ❔ |
-| GPU | Boot into UI | ❔ (24.04: ✅) |
+| GPU | Boot into UI | ✅ |
 |  | Hardware video playback | ❔ |
 | Misc | AppArmor patches | ❔ |
 |  | Battery percentage | ❔ (24.04: ✅) |
@@ -836,7 +879,7 @@ Inoffizielles Ubuntu-Touch-Image für das Poco X3 Pro (Codename **vayu**), gebau
 |  | GPS | ❔ (24.04: ✅) |
 |  | Proximity | ❔ |
 |  | Rotation | ❔ |
-|  | Touchscreen | ❔ (24.04: ✅) |
+|  | Touchscreen | ✅ |
 | Sound | Earphones | ❔ |
 |  | Loudspeaker | ❔ (24.04: ✅) |
 |  | Microphone | ❔ (24.04: ✅) |
@@ -850,6 +893,7 @@ Inoffizielles Ubuntu-Touch-Image für das Poco X3 Pro (Codename **vayu**), gebau
 
 ```
 flash.sh                  automatisches Flash-Skript (Linux)
+debug-boot.sh             holt Logs/Crash-Reports über OrangeFox, falls das Telefon hängt
 SHA256SUMS                Prüfsummen der Images
 images/
   boot.img                UT-Kernel + Halium-Initramfs
@@ -1046,7 +1090,11 @@ Ablauf:
 3. Halium 11 generic arm64
 4. Droidian-vayu-Image (~2 GB, Prüfsumme geprüft) → `vendor.img`, `vbmeta.img`
 5. OrangeFox R11.3 für vayu (Prüfsumme geprüft) → Recovery-Image
-6. baut `ubuntu.img`, schreibt `flash.sh`, `SHA256SUMS` und diese READMEs
+6. libxml2.so.2 + ICU 74 aus Ubuntu 24.04 (Prüfsumme geprüft) für den OpenStore und ältere Clicks
+7. baut `ubuntu.img` mit den [26.04-Fixes](#2604-fixes-in-diesem-kit), schreibt `flash.sh`, `SHA256SUMS` und diese READMEs
+
+Zusätzlich nötig: `aarch64-linux-gnu-objdump`/`readelf` (Paket `binutils-aarch64-linux-gnu`) für die Patches und
+`aarch64-linux-gnu-gcc` für den Debug-Crash-Reporter.
 
 Danach mit `./flash.sh` (Neuinstallation) oder `./flash.sh --rootfs-only` (nur neues `ubuntu.img`) flashen.
 

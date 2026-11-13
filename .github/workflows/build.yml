@@ -129,7 +129,7 @@ jobs:
           fi
           cat > notes.md <<EOF
           🧪 **Ubuntu Touch 26.04 (frühe Version, Kanal \`$CH\`) für Poco X3 Pro (vayu)**
-          UBports-Build ${BUILD:-?}, gebaut von Commit ${GITHUB_SHA::7}. Ungetestet – für den Alltag das 24.04-Kit nutzen.
+          UBports-Build ${BUILD:-?}, gebaut von Commit ${GITHUB_SHA::7}. Frühe Testversion mit vayu-Fixes (Lomiri-Absturz, Skalierung, OpenStore) – Details in der README im Kit. Neuere daily-Builds sind ungetestet; für den Alltag ist das 24.04-Kit die sicherere Wahl.
 
           **Zusammensetzen und flashen:**
           \`\`\`bash
