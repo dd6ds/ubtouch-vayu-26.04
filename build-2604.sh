@@ -136,6 +136,33 @@ slot = 0
 path = /ril_1
 slot = 1
 BINDER_CONF_EOF
+# DEBUG=1 (default while 26.04 is an early build): catch the first crashes of Lomiri & co.
+# as core dumps in /userdata/vayu-cores (= /data/vayu-cores in OrangeFox), max. 3 cores.
+# Fetch them with ./debug-boot.sh. DEBUG=0 ./build-2604.sh builds a clean image.
+DEBUG=${DEBUG:-1}
+rm -rf dl/debug; mkdir -p dl/debug
+if [ "$DEBUG" = 1 ]; then
+cat > dl/debug/vayu-coresave <<'CORESAVE_EOF'
+#!/bin/sh
+# kernel.core_pattern pipe handler: $1=pid $2=comm $3=signal; core arrives on stdin
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+D=/userdata/vayu-cores
+mkdir -p "$D" || { cat >/dev/null; exit 0; }
+if [ "$(ls "$D"/*.core 2>/dev/null | wc -l)" -ge 3 ]; then cat >/dev/null; exit 0; fi
+B="$D/$(date +%s)-$2-$1"
+cp "/proc/$1/maps" "$B.maps" 2>/dev/null
+tr '\0' ' ' < "/proc/$1/cmdline" > "$B.cmdline" 2>/dev/null
+echo "signal=$3 comm=$2 pid=$1" > "$B.info"
+cat > "$B.core"
+sync
+CORESAVE_EOF
+cat > dl/debug/90-vayu-coredump.conf <<'SYSCTL_EOF'
+# vayu 26.04 debug build: send core dumps to /usr/local/sbin/vayu-coresave
+kernel.core_pattern=|/usr/local/sbin/vayu-coresave %P %e %s
+kernel.core_pipe_limit=4
+SYSCTL_EOF
+printf '[Service]\nLimitCORE=infinity\n' > dl/debug/90-vayu-core.conf
+fi
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
 umask 022
@@ -158,6 +185,15 @@ install -m 644 ../dl/vayu-binder.conf system/etc/ofono/binder.conf
 grep -q "^  OfonoPlugin:" system/etc/deviceinfo/devices/vayu.yaml || \
   sed -i "/^vayu:/a\\  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
 grep -q "^  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
+# debug build: core dump capture (see DEBUG above)
+if [ -f ../dl/debug/vayu-coresave ]; then
+  install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
+  install -D -m 644 ../dl/debug/90-vayu-coredump.conf system/etc/sysctl.d/90-vayu-coredump.conf
+  for u in lomiri-full-greeter lomiri-full-shell lomiri-greeter; do
+    install -D -m 644 ../dl/debug/90-vayu-core.conf system/etc/systemd/user/$u.service.d/90-vayu-core.conf
+  done
+  echo "debug: core dump capture installed"
+fi
 chmod 0755 system
 SDV=$(ls system/usr/lib/*/systemd/libsystemd-shared-*.so system/usr/lib/systemd/libsystemd-shared-*.so 2>/dev/null | sed -n "s/.*shared-\([0-9]*\).*/\1/p" | head -1)
 echo "systemd in rootfs: ${SDV:-unknown}"
@@ -179,6 +215,7 @@ mv $OUT/ubuntu.img $OUT/boot.img $OUT/dtbo.img $KIT/images/
 cp dl/droidian/vendor.img dl/droidian/vbmeta.img $KIT/images/
 cp dl/orangefox/recovery.img $KIT/images/orangefox-R11.3-vayu-recovery.img
 cp "$HERE/$(basename "$0")" $KIT/build/
+if [ -f "$HERE/debug-boot.sh" ]; then install -m 755 "$HERE/debug-boot.sh" $KIT/debug-boot.sh; fi
 cp out/device_vayu_usrmerge.tar.xz $KIT/build/out/
 [ -f out/device_vayu_usrmerge.tar.build ] && cp out/device_vayu_usrmerge.tar.build $KIT/build/out/
 if [ -d "$HERE/kernel" ]; then
@@ -910,11 +947,35 @@ MODE=${1:-full}
 
 step() { echo; echo "==> $*"; }
 wait_fastboot() { for i in $(seq 1 90); do fastboot devices | grep -q . && return 0; sleep 1; done; echo "no fastboot device"; exit 1; }
-wait_recovery() { for i in $(seq 1 90); do adb devices | grep -q "recovery$" && return 0; sleep 1; done; echo "no adb recovery device"; exit 1; }
+# OrangeFox brings adb up, then re-inits the USB gadget a few seconds later
+# (adb drops briefly), so wait until it has been visible for 10 s in a row.
+wait_recovery() {
+  local seen=0
+  for i in $(seq 1 180); do
+    if adb devices 2>/dev/null | grep -q "recovery$"; then seen=$((seen+1)); [ $seen -ge 10 ] && return 0
+    else seen=0; fi
+    sleep 1
+  done
+  echo "no stable adb recovery device"; exit 1
+}
+# adb with retry: waits for the recovery device before every attempt
+radb() {
+  for t in 1 2 3 4 5; do
+    timeout 60 adb wait-for-recovery 2>/dev/null || true
+    adb "$@" && return 0
+    echo "  adb failed, retrying ($t/5)"; sleep 3
+  done
+  echo "adb $1 failed"; exit 1
+}
 
 command -v fastboot >/dev/null && command -v adb >/dev/null || { echo "install android-tools (adb/fastboot) first"; exit 1; }
 sha256sum -c ../SHA256SUMS --quiet
 
+# Resume: phone already sitting in OrangeFox -> skip straight to /data
+if adb devices 2>/dev/null | grep -q "recovery$"; then
+  step "Phone is already in recovery - skipping fastboot steps"
+  MODE=--in-recovery
+else
 step "Waiting for phone in fastboot mode"
 wait_fastboot
 [ "$(fastboot getvar product 2>&1 | awk '/product:/{print $2}')" = vayu ] || { echo "not a vayu device"; exit 1; }
@@ -939,19 +1000,20 @@ fi
 
 step "Temporarily booting OrangeFox recovery (not installed)"
 fastboot boot orangefox-R11.3-vayu-recovery.img
-wait_recovery; sleep 5
+fi
+wait_recovery
 
 step "Formatting /data as ext4"
-adb shell 'umount /data 2>/dev/null; umount /sdcard 2>/dev/null; true'
-adb shell 'mke2fs -F -t ext4 /dev/block/by-name/userdata >/dev/null 2>&1 && echo ok'
-adb shell 'mount -t ext4 /dev/block/by-name/userdata /data && df -h /data'
+radb shell 'umount /data 2>/dev/null; umount /sdcard 2>/dev/null; true'
+radb shell 'mke2fs -F -t ext4 /dev/block/by-name/userdata >/dev/null 2>&1 && echo ok'
+radb shell '{ grep -q " /data " /proc/mounts || mount -t ext4 /dev/block/by-name/userdata /data; } && df -h /data'
 
 step "Copying ubuntu.img to /data (about 1 minute)"
-adb push ubuntu.img /data/ubuntu.img
-adb shell 'sync; umount /data'
+radb push ubuntu.img /data/ubuntu.img
+radb shell 'sync; umount /data'
 
 step "Rebooting into Ubuntu Touch (first boot can take a few minutes)"
-adb reboot
+radb reboot
 echo "Done."
 FLASH
 chmod +x $KIT/flash.sh $KIT/build/$(basename "$0")
