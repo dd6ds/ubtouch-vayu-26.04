@@ -207,6 +207,27 @@ if n2 == 1:
     print("qtmir scale fix 2 (Mir output scale = 1) applied at file offset 0x%x" % j)
 else:
     print("WARNING: qtmir scale fix 2: signature found %d times - NOT patched" % n2)
+# Fix 3: Lomiri 0.6 sizes its UI from the screen scale qtmir reports (PlatformScreen::m_scale,
+# copied from the Mir output scale in setMirDisplayConfiguration). With fix 2 that is 1.0 ->
+# tiny text. Replace "ldr s28,[x0,#104]" (load output.scale) by "fmov s28,#<GridUnit/8>",
+# so Lomiri gets the device scale while Mir itself stays at 1.
+gu = float(sys.argv[2]) if len(sys.argv) > 2 else 0
+def fmov_imm8(v):
+    for i8 in range(256):
+        a, b_, cd, frac = i8 >> 7, (i8 >> 6) & 1, (i8 >> 4) & 3, i8 & 15
+        e = ((0 if b_ else 1) << 7 | (0x1f if b_ else 0) << 2 | cd) - 127
+        if (-1) ** a * (1 + frac / 16.0) * 2.0 ** e == v:
+            return i8
+    return None
+sig3 = bytes.fromhex("1e6340bd" "1c6840bd" "00008a52" "60f8a872")
+n3 = b.count(sig3)
+i8 = fmov_imm8(gu / 8.0) if gu > 0 else None
+if n3 == 1 and i8 is not None:
+    k = b.find(sig3)
+    b[k + 4:k + 8] = (0x1E201000 | (i8 << 13) | 28).to_bytes(4, "little")   # fmov s28, #imm
+    print("qtmir scale fix 3 (Lomiri screen scale = %g) applied at file offset 0x%x" % (gu / 8.0, k))
+else:
+    print("WARNING: qtmir scale fix 3: signature found %d times, GridUnit %g (encodable: %s) - NOT patched" % (n3, gu, i8 is not None))
 open(p, "wb").write(b)
 QTMIR_FIX_EOF
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
@@ -233,7 +254,8 @@ grep -q "^  OfonoPlugin:" system/etc/deviceinfo/devices/vayu.yaml || \
 grep -q "^  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
 # qtmir scale fix (see fix-qtmir-scale.py above)
 QTMIR_LIB=$(readlink -f system/usr/lib/aarch64-linux-gnu/libqt5mir1server.so.1 2>/dev/null || true)
-if [ -f "$QTMIR_LIB" ]; then python3 ../dl/fix-qtmir-scale.py "$QTMIR_LIB"; else echo "note: libqt5mir1server.so.1 not found - qtmir scale fix skipped"; fi
+GU=$(sed -n "s/^ *GridUnit: *\([0-9.]*\).*/\1/p" system/etc/deviceinfo/devices/vayu.yaml | head -1)
+if [ -f "$QTMIR_LIB" ]; then python3 ../dl/fix-qtmir-scale.py "$QTMIR_LIB" "${GU:-0}"; else echo "note: libqt5mir1server.so.1 not found - qtmir scale fix skipped"; fi
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
