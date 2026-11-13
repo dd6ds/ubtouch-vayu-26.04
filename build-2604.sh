@@ -34,7 +34,7 @@ done
 [ -n "$REF" ] || { echo "no reference device found in channel $CH (tried: $REF_CANDIDATES)"; exit 1; }
 echo "channel: $CH   reference device for rootfs/version: $REF"
 
-for t in curl wget python3 unzip fakeroot mke2fs xz sha256sum aarch64-linux-gnu-objdump aarch64-linux-gnu-readelf; do
+for t in curl wget python3 unzip fakeroot mke2fs xz sha256sum aarch64-linux-gnu-objdump aarch64-linux-gnu-readelf aarch64-linux-gnu-nm aarch64-linux-gnu-gcc; do
   command -v $t >/dev/null || { echo "missing tool: $t"; exit 1; }
 done
 [ $PACK = 1 ] && { command -v zstd >/dev/null || { echo "missing tool: zstd"; exit 1; }; }
@@ -301,6 +301,10 @@ if not calls:
     print("WARNING: QPA scale fix: no Mir scale calls found in %s" % p)
 open(p, "wb").write(b)
 QPA_FIX_EOF
+# URL dispatcher fix (fixes/vayu-lal-compat.c): liblomiri-app-launch 0.2.0 dropped
+# lomiri_app_launch_start_session_helper() without a soname bump; lomiri-url-dispatcher 0.1.5
+# still needs it and dies at startup -> no settings:// or other links open (indicators, apps).
+aarch64-linux-gnu-gcc -shared -fPIC -O2 -o dl/libvayu-lal-compat.so "$HERE/fixes/vayu-lal-compat.c"
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
 umask 022
@@ -340,6 +344,19 @@ for f in ../dl/compat/x/usr/lib/aarch64-linux-gnu/libxml2.so.2* \
   if [ -e "$t" ] || [ -L "$t" ]; then echo "compat: $(basename "$f") already in rootfs - kept"; else cp -P "$f" "$t"; chown -h 0:0 "$t"; [ -L "$t" ] || chmod 644 "$t"; fi
 done
 echo "compat: $(ls system/usr/lib/aarch64-linux-gnu | grep -cE "^(libxml2\.so\.2|libicu(uc|i18n|data)\.so\.74)") compat files present"
+# URL dispatcher fix: only while the dispatcher needs a symbol that liblomiri-app-launch lacks
+LUD=system/usr/libexec/lomiri-url-dispatcher/lomiri-url-dispatcher
+LAL=$(readlink -f system/usr/lib/aarch64-linux-gnu/liblomiri-app-launch.so.0 2>/dev/null || true)
+if [ -f "$LUD" ] && [ -f "$LAL" ] && \
+   aarch64-linux-gnu-nm -D --undefined-only "$LUD" | grep -qw lomiri_app_launch_start_session_helper && \
+   ! aarch64-linux-gnu-nm -D --defined-only "$LAL" | grep -qw lomiri_app_launch_start_session_helper; then
+  install -D -m 644 ../dl/libvayu-lal-compat.so system/usr/local/lib/libvayu-lal-compat.so
+  mkdir -p system/etc/systemd/user/lomiri-url-dispatcher.service.d
+  printf "[Service]\nEnvironment=LD_PRELOAD=/usr/local/lib/libvayu-lal-compat.so\n" > system/etc/systemd/user/lomiri-url-dispatcher.service.d/90-vayu-lal-compat.conf
+  echo "url-dispatcher fix: installed (lomiri_app_launch_start_session_helper shim)"
+else
+  echo "url-dispatcher fix: not needed (packages match) - skipped"
+fi
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
@@ -415,6 +432,7 @@ The daily rootfs alone does **not** work on vayu. `build-2604.sh` applies these 
 | Lomiri UI tiny | Lomiri 0.6 sizes its UI from the screen scale qtmir reports | qtmir: report `GridUnit/8` from deviceinfo to Lomiri (fix 3) |
 | App UIs tiny (Settings, Phone, Browser, OpenStore apps …) | apps take the scale from Mir via the `ubuntumirclient` platform plugin | Qt5 **and** Qt6 `libqpa-ubuntumirclient.so`: return `GridUnit/8` – covers all apps incl. OpenStore installs |
 | OpenStore (and older clicks) do not start | built for 20.04/24.04, need `libxml2.so.2` (26.04 only has `.so.16`) | add `libxml2.so.2` + ICU 74 from the official Ubuntu 24.04 arm64 packages (SHA256 verified, nothing overwritten) |
+| Links do nothing (e.g. swipe down → Bluetooth → *Bluetooth settings*, links opened by apps) | `lomiri-url-dispatcher` 0.1.5 dies at startup: `liblomiri-app-launch` 0.2.0 dropped `lomiri_app_launch_start_session_helper` without a soname bump | small shim (`fixes/vayu-lal-compat.c`) preloaded into the URL dispatcher only, forwards to `lomiri_app_launch_start_helper`; installed only while the packages mismatch |
 
 Apps that bypass Qt (Firefox-based browsers, Electron, GTK, SDL) do not use these plugins and may still render small.
 
@@ -424,12 +442,12 @@ OrangeFox when the phone does not boot to the UI. `DEBUG=0 ./build/build-2604.sh
 
 ## Hardware support
 
-Tested on 2026-11-13 with build 471 (26.04-1.x daily): boots to the UI, setup wizard, touch, scaling, Settings, Phone, Browser and OpenStore work. Everything else is not re-tested yet – the status column shows what worked with the 24.04-2.2 kit on 2026-10-28 (same kernel, overlay, Halium and vendor).
+Tested on 2026-11-13 with build 471 (26.04-1.x daily): boots to the UI, setup wizard, touch, scaling, Settings, Phone, Browser and OpenStore work; Bluetooth finds devices (BlueZ scan verified via adb). Everything else is not re-tested yet – the status column shows what worked with the 24.04-2.2 kit on 2026-10-28 (same kernel, overlay, Halium and vendor).
 
 | Function | Status |
 |---|---|
 | Wi-Fi | ❔ (24.04: ✅) |
-| Bluetooth | ❔ (24.04: ✅) |
+| Bluetooth | ✅ |
 | Camera | ❔ (24.04: ✅) |
 | Sound | ❔ (24.04: ✅) |
 | Battery charging | ❔ (24.04: ✅) |
@@ -489,7 +507,7 @@ Tested on 2026-11-13 with build 471 (26.04-1.x daily): boots to the UI, setup wi
 |  | Shutdown / Reboot | ❔ (24.04: ✅) |
 |  | Waydroid | ❔ |
 |  | Wireless External monitor | ❔ |
-| Network | Bluetooth | ❔ (24.04: ✅) |
+| Network | Bluetooth | ✅ |
 |  | Flight mode | ❔ (24.04: ✅) |
 |  | Hotspot | ❔ (24.04: ✅) |
 |  | NFC | ❔ |
@@ -794,6 +812,7 @@ Das daily-Rootfs allein läuft auf vayu **nicht**. `build-2604.sh` wendet beim B
 | Lomiri-Oberfläche winzig | Lomiri 0.6 richtet die UI nach dem von qtmir gemeldeten Bildschirmfaktor | qtmir: meldet Lomiri `GridUnit/8` aus deviceinfo (Fix 3) |
 | Apps winzig (Einstellungen, Telefon, Browser, OpenStore-Apps …) | Apps holen den Faktor über das Plugin `ubuntumirclient` von Mir | Qt5- **und** Qt6-`libqpa-ubuntumirclient.so`: liefern `GridUnit/8` – gilt für alle Apps inkl. OpenStore-Installationen |
 | OpenStore (und ältere Clicks) starten nicht | für 20.04/24.04 gebaut, brauchen `libxml2.so.2` (26.04 hat nur `.so.16`) | `libxml2.so.2` + ICU 74 aus den offiziellen Ubuntu-24.04-arm64-Paketen (SHA256 geprüft, nichts überschrieben) |
+| Links tun nichts (z. B. nach unten wischen → Bluetooth → *Bluetooth-Einstellungen*, Links aus Apps) | `lomiri-url-dispatcher` 0.1.5 stirbt beim Start: `liblomiri-app-launch` 0.2.0 hat `lomiri_app_launch_start_session_helper` ohne Soname-Wechsel entfernt | kleine Ersatz-Bibliothek (`fixes/vayu-lal-compat.c`), nur in den URL-Dispatcher geladen, leitet auf `lomiri_app_launch_start_helper` um; wird nur installiert, solange die Pakete nicht zusammenpassen |
 
 Apps, die an Qt vorbei zeichnen (Firefox-basierte Browser, Electron, GTK, SDL), nutzen diese Plugins nicht und können weiter klein sein.
 
@@ -803,12 +822,12 @@ wenn das Telefon nicht bis zur Oberfläche bootet. `DEBUG=0 ./build/build-2604.s
 
 ## Hardware-Unterstützung
 
-Getestet am 13.11.2026 mit Build 471 (26.04-1.x daily): bootet bis zur Oberfläche, Einrichtungs-Assistent, Touch, Skalierung, Einstellungen, Telefon, Browser und OpenStore funktionieren. Alles andere ist noch nicht neu getestet – die Statusspalte zeigt, was mit dem 24.04-2.2-Kit am 28.10.2026 funktionierte (gleicher Kernel, Overlay, Halium und Vendor).
+Getestet am 13.11.2026 mit Build 471 (26.04-1.x daily): bootet bis zur Oberfläche, Einrichtungs-Assistent, Touch, Skalierung, Einstellungen, Telefon, Browser und OpenStore funktionieren; Bluetooth findet Geräte (BlueZ-Scan per adb geprüft). Alles andere ist noch nicht neu getestet – die Statusspalte zeigt, was mit dem 24.04-2.2-Kit am 28.10.2026 funktionierte (gleicher Kernel, Overlay, Halium und Vendor).
 
 | Funktion | Status |
 |---|---|
 | WLAN | ❔ (24.04: ✅) |
-| Bluetooth | ❔ (24.04: ✅) |
+| Bluetooth | ✅ |
 | Kamera | ❔ (24.04: ✅) |
 | Ton / Lautsprecher | ❔ (24.04: ✅) |
 | Akku laden | ❔ (24.04: ✅) |
@@ -868,7 +887,7 @@ Getestet am 13.11.2026 mit Build 471 (26.04-1.x daily): bootet bis zur Oberfläc
 |  | Shutdown / Reboot | ❔ (24.04: ✅) |
 |  | Waydroid | ❔ |
 |  | Wireless External monitor | ❔ |
-| Network | Bluetooth | ❔ (24.04: ✅) |
+| Network | Bluetooth | ✅ |
 |  | Flight mode | ❔ (24.04: ✅) |
 |  | Hotspot | ❔ (24.04: ✅) |
 |  | NFC | ❔ |
