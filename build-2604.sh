@@ -171,6 +171,30 @@ else
   echo "note: aarch64-linux-gnu-gcc missing - no crash reporter in the debug image"
 fi
 fi
+# qtmir fix (26.04): qtmir sets the panel scale to GridUnit/8 (vayu: 21/8 = 2.625). On the
+# mir1 code path ScreensModel::updateInternal() then matches Mir DisplayBuffers to screens by
+# comparing the buffer view_area (logical px, 411x914) with the screen geometry (physical px,
+# 1080x2400) -> never matches -> PlatformScreen::m_renderTarget stays NULL -> Lomiri SEGV in
+# PlatformScreen::makeCurrent(), endless restart loop at the boot splash.
+# Patch: drop the width/height part of that comparison (top-left is still checked).
+# vayu has a single panel and no video out, so the first screen at (0,0) is the right one.
+cat > dl/fix-qtmir-scale.py <<'QTMIR_FIX_EOF'
+import sys
+p = sys.argv[1]
+b = bytearray(open(p, "rb").read())
+# cmp w23,w3 / b.ne / cmp w26,w0 / b.ne / cmp w20,w2 / b.ne / cmp w1,w27 / b.ne  (all b.ne -> same target)
+sig = bytes.fromhex("ff02036b 61feff54 5f03006b 21feff54 9f02026b e1fdff54 3f001b6b a1fdff54".replace(" ", ""))
+nop = bytes.fromhex("1f2003d5")
+n = b.count(sig)
+if n != 1:
+    print("WARNING: qtmir scale fix: signature found %d times - qtmir changed, NOT patched" % n)
+    sys.exit(0)
+i = b.find(sig)
+b[i + 12:i + 16] = nop    # b.ne after cmp w26,w0  (right edge)
+b[i + 28:i + 32] = nop    # b.ne after cmp w1,w27  (bottom edge)
+open(p, "wb").write(b)
+print("qtmir scale fix applied at file offset 0x%x" % i)
+QTMIR_FIX_EOF
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
 umask 022
@@ -193,6 +217,9 @@ install -m 644 ../dl/vayu-binder.conf system/etc/ofono/binder.conf
 grep -q "^  OfonoPlugin:" system/etc/deviceinfo/devices/vayu.yaml || \
   sed -i "/^vayu:/a\\  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
 grep -q "^  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
+# qtmir scale fix (see fix-qtmir-scale.py above)
+QTMIR_LIB=$(readlink -f system/usr/lib/aarch64-linux-gnu/libqt5mir1server.so.1 2>/dev/null || true)
+if [ -f "$QTMIR_LIB" ]; then python3 ../dl/fix-qtmir-scale.py "$QTMIR_LIB"; else echo "note: libqt5mir1server.so.1 not found - qtmir scale fix skipped"; fi
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
