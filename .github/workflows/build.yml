@@ -59,7 +59,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             curl wget python3 unzip fakeroot e2fsprogs xz-utils zstd \
-            git make gcc bc bison flex cpio libssl-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            git make gcc bc bison flex cpio libssl-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu
           echo 'progress = dot:giga' > ~/.wgetrc   # wget-Fortschritt sonst zeilenweise im Log
 
       # Halium, Droidian (~2 GB), OrangeFox zwischenspeichern. Das 26.04-Rootfs

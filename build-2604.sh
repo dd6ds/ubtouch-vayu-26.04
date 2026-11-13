@@ -34,7 +34,7 @@ done
 [ -n "$REF" ] || { echo "no reference device found in channel $CH (tried: $REF_CANDIDATES)"; exit 1; }
 echo "channel: $CH   reference device for rootfs/version: $REF"
 
-for t in curl wget python3 unzip fakeroot mke2fs xz sha256sum; do
+for t in curl wget python3 unzip fakeroot mke2fs xz sha256sum aarch64-linux-gnu-objdump aarch64-linux-gnu-readelf; do
   command -v $t >/dev/null || { echo "missing tool: $t"; exit 1; }
 done
 [ $PACK = 1 ] && { command -v zstd >/dev/null || { echo "missing tool: zstd"; exit 1; }; }
@@ -230,6 +230,45 @@ else:
     print("WARNING: qtmir scale fix 3: signature found %d times, GridUnit %g (encodable: %s) - NOT patched" % (n3, gu, i8 is not None))
 open(p, "wb").write(b)
 QTMIR_FIX_EOF
+# QPA fix (apps): Mir1 clients (ubuntumirclient QPA, qtubuntu) take the screen scale from Mir
+# (mir_output_get_scale_factor / mir_window_output_event_get_scale) and lomiri-ui-toolkit sizes
+# app UIs from it (UCUnits::getScreenScaling). With Mir at scale 1 apps were tiny, so both calls
+# are replaced by "fmov s0,#<GridUnit/8>" (float return value in s0).
+cat > dl/fix-qpa-scale.py <<'QPA_FIX_EOF'
+# Replace every call to mir_output_get_scale_factor / mir_window_output_event_get_scale
+# (found with the aarch64 objdump) by "fmov s0,#<GridUnit/8>". Works for the Qt5 and the Qt6
+# ubuntumirclient plugin and survives rebuilds of those plugins (no fixed byte signatures).
+import re, subprocess, sys
+p, gu = sys.argv[1], float(sys.argv[2])
+def fmov_imm8(v):
+    for i8 in range(256):
+        a, b_, cd, frac = i8 >> 7, (i8 >> 6) & 1, (i8 >> 4) & 3, i8 & 15
+        e = ((0 if b_ else 1) << 7 | (0x1f if b_ else 0) << 2 | cd) - 127
+        if (-1) ** a * (1 + frac / 16.0) * 2.0 ** e == v:
+            return i8
+    return None
+i8 = fmov_imm8(gu / 8.0) if gu > 0 else None
+if i8 is None:
+    print("WARNING: QPA scale fix: GridUnit %g not encodable - %s NOT patched" % (gu, p)); sys.exit(0)
+fmov = (0x1E201000 | (i8 << 13)).to_bytes(4, "little")      # fmov s0, #GridUnit/8
+od = subprocess.run(["aarch64-linux-gnu-objdump", "-d", p], capture_output=True, text=True).stdout
+sec = subprocess.run(["aarch64-linux-gnu-readelf", "-SW", p], capture_output=True, text=True).stdout
+m = re.search(r"\.text\s+PROGBITS\s+([0-9a-f]+)\s+([0-9a-f]+)", sec)
+delta = int(m.group(1), 16) - int(m.group(2), 16)              # vaddr - file offset of .text
+calls = re.findall(r"^\s*([0-9a-f]+):\s+[0-9a-f]{8}\s+bl\s+[0-9a-f]+ <(mir_output_get_scale_factor|mir_window_output_event_get_scale)@plt>", od, re.M)
+b = bytearray(open(p, "rb").read())
+done = 0
+for addr, fn in calls:
+    off = int(addr, 16) - delta
+    insn = int.from_bytes(b[off:off + 4], "little")
+    if insn >> 26 != 0b100101:                                   # must be a BL
+        print("WARNING: QPA scale fix: no BL at 0x%x in %s - skipped" % (off, p)); continue
+    b[off:off + 4] = fmov; done += 1
+    print("QPA scale fix: %s -> %g at 0x%x (%s)" % (fn, gu / 8.0, off, p.split("/plugins/")[0].split("/")[-1]))
+if not calls:
+    print("WARNING: QPA scale fix: no Mir scale calls found in %s" % p)
+open(p, "wb").write(b)
+QPA_FIX_EOF
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
 umask 022
@@ -256,6 +295,10 @@ grep -q "^  OfonoPlugin: binder" system/etc/deviceinfo/devices/vayu.yaml
 QTMIR_LIB=$(readlink -f system/usr/lib/aarch64-linux-gnu/libqt5mir1server.so.1 2>/dev/null || true)
 GU=$(sed -n "s/^ *GridUnit: *\([0-9.]*\).*/\1/p" system/etc/deviceinfo/devices/vayu.yaml | head -1)
 if [ -f "$QTMIR_LIB" ]; then python3 ../dl/fix-qtmir-scale.py "$QTMIR_LIB" "${GU:-0}"; else echo "note: libqt5mir1server.so.1 not found - qtmir scale fix skipped"; fi
+for QPA_LIB in system/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms/libqpa-ubuntumirclient.so \
+               system/usr/lib/aarch64-linux-gnu/qt6/plugins/platforms/libqpa-ubuntumirclient.so; do
+  if [ -f "$QPA_LIB" ]; then python3 ../dl/fix-qpa-scale.py "$QPA_LIB" "${GU:-0}"; else echo "note: $QPA_LIB not found - app scale fix skipped"; fi
+done
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
