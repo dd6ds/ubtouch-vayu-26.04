@@ -21,6 +21,7 @@ OpenStore and Bluetooth scanning work. The rest of the hardware is not re-tested
 | Tiny UI in Lomiri and in all apps | qtmir + Qt5/Qt6 `ubuntumirclient` plugin report `GridUnit/8` (2.625) |
 | OpenStore and older clicks do not start | `libxml2.so.2` + ICU 74 from Ubuntu 24.04 (SHA256 verified) |
 | Links do nothing (indicator → *Bluetooth settings*, links from apps) | shim for the URL dispatcher (`liblomiri-app-launch` 0.2.0 dropped a function it still needs) |
+| Settings → *Brightness & Display* does not open | mark a declared-but-never-implemented Qt slot weak in the panel plugin (1 byte) |
 
 All binary patches look up their exact code location and print a `WARNING` instead of patching blindly when
 UBports ships changed binaries. Details: the README inside the kit.
@@ -56,6 +57,7 @@ journal, Lomiri crash reports and pstore through a temporarily booted OrangeFox 
 | `debug-boot.sh` | log/crash-report collector for a phone that does not reach the UI |
 | `debug/vayucrash.c` | LD_PRELOAD crash reporter for Lomiri (debug builds) |
 | `fixes/vayu-lal-compat.c` | URL dispatcher shim for the `liblomiri-app-launch` 0.2.0 ABI break |
+| `fixes/elf-weaken-undef.py` | marks undefined dynamic symbols weak (Brightness & Display panel fix) |
 | `kernel/` | optional own kernel build 4.14.190-halium → 4.14.221-perf |
 | `.github/workflows/build.yml` | one-click build + release |
 
@@ -80,6 +82,7 @@ Einstellungen, Telefon, Browser, OpenStore und Bluetooth-Suche funktionieren. Di
 | Winzige Oberfläche in Lomiri und allen Apps | qtmir + Qt5/Qt6-Plugin `ubuntumirclient` melden `GridUnit/8` (2,625) |
 | OpenStore und ältere Clicks starten nicht | `libxml2.so.2` + ICU 74 aus Ubuntu 24.04 (SHA256 geprüft) |
 | Links tun nichts (Indikator → *Bluetooth-Einstellungen*, Links aus Apps) | Ersatz-Bibliothek für den URL-Dispatcher (`liblomiri-app-launch` 0.2.0 hat eine benötigte Funktion entfernt) |
+| Einstellungen → *Helligkeit & Anzeige* öffnet nicht | einen deklarierten, aber nie implementierten Qt-Slot im Panel-Plugin als „weak“ markieren (1 Byte) |
 
 **Kit bekommen:** fertiges Release herunterladen (Befehle oben), per *Actions → „Build UT 26.04 flash kit“ → Run workflow*
 auf GitHub bauen (erstellt ein Pre-Release) oder lokal mit `./build-2604.sh` (Pakete siehe oben, kein root nötig).

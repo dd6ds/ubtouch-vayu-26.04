@@ -305,6 +305,8 @@ QPA_FIX_EOF
 # lomiri_app_launch_start_session_helper() without a soname bump; lomiri-url-dispatcher 0.1.5
 # still needs it and dies at startup -> no settings:// or other links open (indicators, apps).
 aarch64-linux-gnu-gcc -shared -fPIC -O2 -o dl/libvayu-lal-compat.so "$HERE/fixes/vayu-lal-compat.c"
+# Settings "Brightness & Display" fix: see fixes/elf-weaken-undef.py
+cp "$HERE/fixes/elf-weaken-undef.py" dl/elf-weaken-undef.py
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
 umask 022
@@ -356,6 +358,16 @@ if [ -f "$LUD" ] && [ -f "$LAL" ] && \
   echo "url-dispatcher fix: installed (lomiri_app_launch_start_session_helper shim)"
 else
   echo "url-dispatcher fix: not needed (packages match) - skipped"
+fi
+# Settings "Brightness & Display": lomiri-system-settings 1.5.0 declares the Qt slot
+# DeviceModel::slotAdapterPropertiesChanged in plugins/brightness/aethercast but never implements
+# it -> the panel plugin cannot be loaded. The slot is never connected there, so its undefined
+# reference is made weak (1 byte in .dynsym, no code change). Skipped once upstream defines it.
+BP=system/usr/lib/aarch64-linux-gnu/lomiri-system-settings/private/Lomiri/SystemSettings/Brightness/libLomiriBrightnessPanel.so
+if [ -f "$BP" ]; then
+  python3 ../dl/elf-weaken-undef.py "$BP" _ZN11DeviceModel28slotAdapterPropertiesChangedERK7QStringRK4QMapIS0_8QVariantERK11QStringList
+else
+  echo "note: $BP not found - brightness panel fix skipped"
 fi
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
@@ -433,6 +445,7 @@ The daily rootfs alone does **not** work on vayu. `build-2604.sh` applies these 
 | App UIs tiny (Settings, Phone, Browser, OpenStore apps …) | apps take the scale from Mir via the `ubuntumirclient` platform plugin | Qt5 **and** Qt6 `libqpa-ubuntumirclient.so`: return `GridUnit/8` – covers all apps incl. OpenStore installs |
 | OpenStore (and older clicks) do not start | built for 20.04/24.04, need `libxml2.so.2` (26.04 only has `.so.16`) | add `libxml2.so.2` + ICU 74 from the official Ubuntu 24.04 arm64 packages (SHA256 verified, nothing overwritten) |
 | Links do nothing (e.g. swipe down → Bluetooth → *Bluetooth settings*, links opened by apps) | `lomiri-url-dispatcher` 0.1.5 dies at startup: `liblomiri-app-launch` 0.2.0 dropped `lomiri_app_launch_start_session_helper` without a soname bump | small shim (`fixes/vayu-lal-compat.c`) preloaded into the URL dispatcher only, forwards to `lomiri_app_launch_start_helper`; installed only while the packages mismatch |
+| Settings → *Brightness & Display* does not open | `lomiri-system-settings` 1.5.0: the aethercast `DeviceModel` declares the Qt slot `slotAdapterPropertiesChanged` but never implements it, so the panel plugin fails to load | the never-called slot's undefined reference is made weak (1 byte in `.dynsym`, `fixes/elf-weaken-undef.py`) |
 
 Apps that bypass Qt (Firefox-based browsers, Electron, GTK, SDL) do not use these plugins and may still render small.
 
@@ -813,6 +826,7 @@ Das daily-Rootfs allein läuft auf vayu **nicht**. `build-2604.sh` wendet beim B
 | Apps winzig (Einstellungen, Telefon, Browser, OpenStore-Apps …) | Apps holen den Faktor über das Plugin `ubuntumirclient` von Mir | Qt5- **und** Qt6-`libqpa-ubuntumirclient.so`: liefern `GridUnit/8` – gilt für alle Apps inkl. OpenStore-Installationen |
 | OpenStore (und ältere Clicks) starten nicht | für 20.04/24.04 gebaut, brauchen `libxml2.so.2` (26.04 hat nur `.so.16`) | `libxml2.so.2` + ICU 74 aus den offiziellen Ubuntu-24.04-arm64-Paketen (SHA256 geprüft, nichts überschrieben) |
 | Links tun nichts (z. B. nach unten wischen → Bluetooth → *Bluetooth-Einstellungen*, Links aus Apps) | `lomiri-url-dispatcher` 0.1.5 stirbt beim Start: `liblomiri-app-launch` 0.2.0 hat `lomiri_app_launch_start_session_helper` ohne Soname-Wechsel entfernt | kleine Ersatz-Bibliothek (`fixes/vayu-lal-compat.c`), nur in den URL-Dispatcher geladen, leitet auf `lomiri_app_launch_start_helper` um; wird nur installiert, solange die Pakete nicht zusammenpassen |
+| Einstellungen → *Helligkeit & Anzeige* öffnet nicht | `lomiri-system-settings` 1.5.0: das Aethercast-`DeviceModel` deklariert den Qt-Slot `slotAdapterPropertiesChanged`, implementiert ihn aber nicht – das Panel-Plugin lässt sich nicht laden | der nie aufgerufene Slot wird als „weak“ markiert (1 Byte in `.dynsym`, `fixes/elf-weaken-undef.py`) |
 
 Apps, die an Qt vorbei zeichnen (Firefox-basierte Browser, Electron, GTK, SDL), nutzen diese Plugins nicht und können weiter klein sein.
 
