@@ -186,14 +186,28 @@ b = bytearray(open(p, "rb").read())
 sig = bytes.fromhex("ff02036b 61feff54 5f03006b 21feff54 9f02026b e1fdff54 3f001b6b a1fdff54".replace(" ", ""))
 nop = bytes.fromhex("1f2003d5")
 n = b.count(sig)
-if n != 1:
-    print("WARNING: qtmir scale fix: signature found %d times - qtmir changed, NOT patched" % n)
-    sys.exit(0)
-i = b.find(sig)
-b[i + 12:i + 16] = nop    # b.ne after cmp w26,w0  (right edge)
-b[i + 28:i + 32] = nop    # b.ne after cmp w1,w27  (bottom edge)
+if n == 1:
+    i = b.find(sig)
+    b[i + 12:i + 16] = nop    # b.ne after cmp w26,w0  (right edge)
+    b[i + 28:i + 32] = nop    # b.ne after cmp w1,w27  (bottom edge)
+    print("qtmir scale fix 1 (DisplayBuffer matching) applied at file offset 0x%x" % i)
+else:
+    print("WARNING: qtmir scale fix 1: signature found %d times - qtmir changed, NOT patched" % n)
+# Fix 2: DisplayConfigurationPolicy ctor: "scale = 1.0; if (GRID_UNIT_PX set) scale = GRID_UNIT_PX/8".
+# The 26.04 mir1 (build 2026-11-12) now really applies that output scale (logical 411x914),
+# while qtmir's mir1 path keeps rendering/input in physical pixels -> tiny cut-out picture
+# and misplaced touch. NOP the branch so Mir always gets scale 1 (= effective 24.04 behaviour).
+# GRID_UNIT_PX stays exported, so lomiri-ui-toolkit still sizes the UI with grid unit 21.
+# fmov s0,#1.0 / tbnz w0,#0,<compute> / str s0,[x19]
+sig2 = bytes.fromhex("00102e1e" "40030037" "600200bd")
+n2 = b.count(sig2)
+if n2 == 1:
+    j = b.find(sig2)
+    b[j + 4:j + 8] = nop
+    print("qtmir scale fix 2 (Mir output scale = 1) applied at file offset 0x%x" % j)
+else:
+    print("WARNING: qtmir scale fix 2: signature found %d times - NOT patched" % n2)
 open(p, "wb").write(b)
-print("qtmir scale fix applied at file offset 0x%x" % i)
 QTMIR_FIX_EOF
 LIST="dl/$(basename $ROOTFS) dl/halium_halium_arm64.tar.xz out/device_vayu_usrmerge.tar.xz dl/version.tar.xz"
 fakeroot -- bash -ec '
