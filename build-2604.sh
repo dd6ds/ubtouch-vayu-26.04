@@ -89,6 +89,38 @@ done
 unzip -o -q -j dl/OrangeFox-R11.3-Stable-vayu.zip recovery.img -d dl/orangefox
 echo "$OFOX_SHA  dl/orangefox/recovery.img" | sha256sum -c -
 
+step "24.04 compat libraries (libxml2.so.2 + ICU 74 for OpenStore and older click apps)"
+# Clicks built for 20.04/24.04 (e.g. the preinstalled OpenStore 4.2.0) link libxml2.so.2,
+# which 26.04 replaced by libxml2.so.16. Take the official Ubuntu 24.04 (noble) arm64 packages;
+# their sonames (libxml2.so.2, libicu*.so.74) do not clash with anything in 26.04.
+python3 - dl/compat <<'COMPAT_EOF'
+import hashlib, lzma, os, re, sys, urllib.request
+out = sys.argv[1]; os.makedirs(out, exist_ok=True)
+base = "https://ports.ubuntu.com/ubuntu-ports"
+want = {"libxml2": None, "libicu74": None}
+for suite in ("noble-updates", "noble-security", "noble"):
+    idx = lzma.decompress(urllib.request.urlopen("%s/dists/%s/main/binary-arm64/Packages.xz" % (base, suite)).read()).decode()
+    for blk in idx.split("\n\n"):
+        m = re.search(r"^Package: (\S+)$", blk, re.M)
+        if not m or m.group(1) not in want: continue
+        f = dict(re.findall(r"^(Version|Filename|SHA256): (\S+)$", blk, re.M))
+        if want[m.group(1)] is None: want[m.group(1)] = f   # first suite wins (updates > security > release)
+for pkg, f in want.items():
+    if f is None: sys.exit("compat: package %s not found in noble" % pkg)
+    deb = os.path.join(out, os.path.basename(f["Filename"]))
+    if not os.path.exists(deb):
+        urllib.request.urlretrieve("%s/%s" % (base, f["Filename"]), deb)
+    if hashlib.sha256(open(deb, "rb").read()).hexdigest() != f["SHA256"]:
+        os.remove(deb); sys.exit("compat: checksum mismatch for %s" % deb)
+    print("compat: %s %s ok" % (pkg, f["Version"]))
+COMPAT_EOF
+rm -rf dl/compat/x; mkdir -p dl/compat/x
+for d in dl/compat/libxml2_*_arm64.deb dl/compat/libicu74_*_arm64.deb; do
+  if command -v dpkg-deb >/dev/null; then dpkg-deb -x "$d" dl/compat/x
+  else (cd dl/compat && ar p "$(basename "$d")" "$(ar t "$(basename "$d")" | grep '^data.tar')" | tar -x --zstd -C x 2>/dev/null || ar p "$(basename "$d")" data.tar.xz | tar -xJ -C x); fi
+done
+ls dl/compat/x/usr/lib/aarch64-linux-gnu/ | grep -E '^(libxml2\.so\.2|libicu(uc|i18n|data)\.so\.74)'
+
 # ---------------------------------------------------------------- build ubuntu.img
 step "Building ubuntu.img"
 # OS build info (Settings -> About -> OS build "26.04-1.x"): take the version tarball of the
@@ -299,6 +331,15 @@ for QPA_LIB in system/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms/libqpa-ubu
                system/usr/lib/aarch64-linux-gnu/qt6/plugins/platforms/libqpa-ubuntumirclient.so; do
   if [ -f "$QPA_LIB" ]; then python3 ../dl/fix-qpa-scale.py "$QPA_LIB" "${GU:-0}"; else echo "note: $QPA_LIB not found - app scale fix skipped"; fi
 done
+# 24.04 compat libraries (libxml2.so.2 + ICU 74): add, never overwrite 26.04 files
+for f in ../dl/compat/x/usr/lib/aarch64-linux-gnu/libxml2.so.2* \
+         ../dl/compat/x/usr/lib/aarch64-linux-gnu/libicuuc.so.74* \
+         ../dl/compat/x/usr/lib/aarch64-linux-gnu/libicui18n.so.74* \
+         ../dl/compat/x/usr/lib/aarch64-linux-gnu/libicudata.so.74*; do
+  t=system/usr/lib/aarch64-linux-gnu/$(basename "$f")
+  if [ -e "$t" ] || [ -L "$t" ]; then echo "compat: $(basename "$f") already in rootfs - kept"; else cp -P "$f" "$t"; chown -h 0:0 "$t"; [ -L "$t" ] || chmod 644 "$t"; fi
+done
+echo "compat: $(ls system/usr/lib/aarch64-linux-gnu | grep -cE "^(libxml2\.so\.2|libicu(uc|i18n|data)\.so\.74)") compat files present"
 # debug build: core dump capture (see DEBUG above)
 if [ -f ../dl/debug/vayu-coresave ]; then
   install -D -m 755 ../dl/debug/vayu-coresave system/usr/local/sbin/vayu-coresave
